@@ -1,0 +1,17 @@
+name: webidl2
+description: WebIDL parser.
+version: 0.0.1
+repository: https://github.com/ykmnkmi/webidl2.dart
+
+environment:
+  sdk: ^3.7.0
+
+# Add regular dependencies here.
+dependencies:
+  meta: ^1.16.0
+
+dev_dependencies:
+  build_runner: ^2.4.15
+  build_web_compilers: ^4.1.2
+  lints: ^5.1.1
+  test: ^1.25.15
