@@ -1,20 +1,29 @@
-import 'package:webidl2/src/source_position.dart';
-import 'package:webidl2/src/token_type.dart';
+import 'package:webidl2/webidl2.dart';
 
-/// Token class representing a lexical token.
-class Token {
-  const Token(this.type, this.lexeme, this.start, this.end);
+final class Token {
+  const Token(this.type, this.value, this.position);
 
   final TokenType type;
 
-  final String lexeme;
+  final String value;
 
-  final SourcePosition start;
+  final int position;
 
-  final SourcePosition end;
+  @override
+  bool operator ==(Object other) {
+    return other is Token &&
+        other.type == type &&
+        other.value == value &&
+        other.position == position;
+  }
+
+  @override
+  int get hashCode {
+    return Object.hash(type, value, position);
+  }
 
   @override
   String toString() {
-    return '$type: "$lexeme" at $start-$end';
+    return "Token($type, '${value.replaceAll("'", "\\'")}', $position)";
   }
 }

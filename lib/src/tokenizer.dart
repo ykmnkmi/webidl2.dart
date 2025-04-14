@@ -1,509 +1,556 @@
-import 'package:webidl2/src/source_position.dart';
-import 'package:webidl2/src/token.dart';
-import 'package:webidl2/src/token_type.dart';
+import 'dart:convert';
 
-/// Tokenizer for WebIDL.
-class Tokenizer {
-  Tokenizer(this.source);
+import 'package:webidl2/webidl2.dart';
 
-  final String source;
-
-  int position = 0;
-
-  int line = 1;
-
-  int column = 1;
-
-  bool get isAtEnd {
-    return position >= source.length;
+final class Tokenizer {
+  factory Tokenizer(String input) {
+    return Tokenizer.fromBytes(const Utf8Encoder().convert(input));
   }
 
-  String get currentChar {
-    return isAtEnd ? '' : source[position];
-  }
+  Tokenizer.fromBytes(this.input) : _length = input.length;
 
-  String peek([int offset = 0]) {
-    int position = this.position + offset;
-    return (position >= source.length) ? '' : source[position];
-  }
+  final List<int> input;
 
-  String advance() {
-    String char = currentChar;
-    position++;
+  final int _length;
 
-    if (char == '\n') {
-      line++;
-      column = 1;
-    } else {
-      column++;
-    }
+  int _position = 0;
 
-    return char;
-  }
-
-  bool match(String expected) {
-    if (isAtEnd || currentChar != expected) {
-      return false;
-    }
-
-    advance();
-    return true;
-  }
-
-  SourcePosition currentPosition() {
-    return SourcePosition(position, line, column);
-  }
-
-  /// Tokenize the entire source into a list of tokens.
   List<Token> tokenize() {
     List<Token> tokens = <Token>[];
 
-    while (!isAtEnd) {
-      tokens.add(nextToken());
+    while (_position < _length) {
+      Token? token = _nextToken();
+
+      if (token == null) {
+        break;
+      }
+
+      tokens.add(token);
     }
 
-    SourcePosition position = currentPosition();
-    tokens.add(Token(TokenType.eof, '', position, position));
+    tokens.add(Token(TokenType.eof, '', _position));
     return tokens;
   }
 
-  /// Get the next token from the source.
-  Token nextToken() {
-    skipWhitespace();
+  Token? _nextToken() {
+    _skipWhitespaceAndComments();
 
-    SourcePosition startPosition = currentPosition();
-
-    if (isAtEnd) {
-      return Token(TokenType.eof, '', startPosition, startPosition);
+    if (_position >= _length) {
+      return null;
     }
 
-    String char = currentChar;
+    int start = _position;
+    int byte = input[_position];
 
-    // Comments
-    if (char == '/' && peek(1) == '/') {
-      return scanLineComment(startPosition);
+    switch (byte) {
+      case 0x3D: // '='
+        _position++;
+        return Token(TokenType.equals, '=', start);
+
+      case 0x2C: // ','
+        _position++;
+        return Token(TokenType.comma, ',', start);
+
+      case 0x3B: // ';'
+        _position++;
+        return Token(TokenType.semicolon, ';', start);
+
+      case 0x3A: // ':'
+        _position++;
+        return Token(TokenType.colon, ':', start);
+
+      case 0x7B: // '{'
+        _position++;
+        return Token(TokenType.leftBrace, '{', start);
+
+      case 0x7D: // '}'
+        _position++;
+        return Token(TokenType.rightBrace, '}', start);
+
+      case 0x5B: // '['
+        _position++;
+        return Token(TokenType.extendedAttributeStart, '[', start);
+
+      case 0x5D: // ']'
+        _position++;
+        return Token(TokenType.extendedAttributeEnd, ']', start);
+
+      case 0x28: // '('
+        _position++;
+        return Token(TokenType.leftParen, '(', start);
+
+      case 0x29: // ')'
+        _position++;
+        return Token(TokenType.rightParen, ')', start);
+
+      case 0x2E: // '.'
+        if (_position + 2 < _length &&
+            input[_position + 1] == 0x2E &&
+            input[_position + 2] == 0x2E) {
+          _position += 3;
+          return Token(TokenType.ellipsis, '...', start);
+        }
+
+        _position++;
+        return Token(TokenType.dot, '.', start);
+
+      case 0x3F: // '?'
+        _position++;
+        return Token(TokenType.questionMark, '?', start);
+
+      case 0x3C: // '<'
+        _position++;
+        return Token(TokenType.lessThan, '<', start);
+
+      case 0x3E: // '>'
+        _position++;
+        return Token(TokenType.greaterThan, '>', start);
+
+      case 0x2A: // '*'
+        _position++;
+        return Token(TokenType.asterisk, '*', start);
     }
 
-    if (char == '/' && peek(1) == '*') {
-      if (peek(2) == '*') {
-        return scanDocComment(startPosition);
-      }
-
-      return scanBlockComment(startPosition);
+    if (_isDigit(byte) ||
+        byte == /* '-' */ 0x2D ||
+        byte == /* 'I' */ 0x49 ||
+        byte == /* 'N' */ 0x4E) {
+      return _parseNumberOrSpecial(start);
     }
 
-    // Punctuation
-    if (char == '{') {
-      return makeToken(TokenType.leftBrace, startPosition);
+    if (byte == /* '"' */ 0x22) {
+      return _parseString(start);
     }
 
-    if (char == '}') {
-      return makeToken(TokenType.rightBrace, startPosition);
+    if (_isIdentifierStart(byte)) {
+      return _parseIdentifierOrKeyword(start);
     }
 
-    if (char == '(') {
-      return makeToken(TokenType.leftParen, startPosition);
-    }
-
-    if (char == ')') {
-      return makeToken(TokenType.rightParen, startPosition);
-    }
-
-    if (char == '[') {
-      return makeToken(TokenType.leftBracket, startPosition);
-    }
-
-    if (char == ']') {
-      return makeToken(TokenType.rightBracket, startPosition);
-    }
-
-    if (char == ';') {
-      return makeToken(TokenType.semiColon, startPosition);
-    }
-
-    if (char == ':') {
-      return makeToken(TokenType.colon, startPosition);
-    }
-
-    if (char == ',') {
-      return makeToken(TokenType.comma, startPosition);
-    }
-
-    if (char == '?') {
-      return makeToken(TokenType.question, startPosition);
-    }
-
-    if (char == '=') {
-      return makeToken(TokenType.equals, startPosition);
-    }
-
-    if (char == '<') {
-      return makeToken(TokenType.lessThan, startPosition);
-    }
-
-    if (char == '>') {
-      return makeToken(TokenType.greaterThan, startPosition);
-    }
-
-    if (char == '|') {
-      return makeToken(TokenType.or, startPosition);
-    }
-
-    // Ellipsis
-    if (char == '.' && peek(1) == '.' && peek(2) == '.') {
-      advance();
-      advance();
-      advance();
-      return Token(TokenType.ellipsis, '...', startPosition, currentPosition());
-    }
-
-    // Numbers
-    if (isDigit(char)) {
-      return scanNumber(startPosition);
-    }
-
-    // String literals
-    if (char == '"' || char == "'") {
-      return scanString(char, startPosition);
-    }
-
-    // Identifiers and keywords
-    if (isAlpha(char) || char == '_') {
-      return scanIdentifier(startPosition);
-    }
-
-    // Unknown character
-    advance();
-    return Token(TokenType.error, char, startPosition, currentPosition());
+    _position++;
+    return Token(TokenType.invalid, String.fromCharCode(byte), start);
   }
 
-  Token makeToken(TokenType type, SourcePosition startPosition) {
-    String char = advance();
-    return Token(type, char, startPosition, currentPosition());
-  }
+  void _skipWhitespaceAndComments() {
+    while (_position < _length) {
+      int byte = input[_position];
 
-  void skipWhitespace() {
-    while (!isAtEnd) {
-      String char = currentChar;
+      if (_isWhitespace(byte)) {
+        _position++;
+      } else if (byte == /* '/' */ 0x2F &&
+          _position + 1 < _length &&
+          input[_position + 1] == 0x2F) {
+        _position += 2;
 
-      if (char == ' ' || char == '\t' || char == '\r' || char == '\n') {
-        advance();
+        while (_position < _length && input[_position] != /* '\n' */ 0x0A) {
+          _position++;
+        }
+      } else if (byte == /* '/' */ 0x2F &&
+          _position + 1 < _length &&
+          input[_position + 1] == /* '*' */ 0x2A) {
+        _position += 2;
+
+        while (_position + 1 < _length &&
+            !(input[_position] == 0x2A && input[_position + 1] == 0x2F)) {
+          _position++;
+        }
+
+        _position += 2;
       } else {
         break;
       }
     }
   }
 
-  Token scanLineComment(SourcePosition startPosition) {
-    // Skip the "//"
-    advance();
-    advance();
+  Token _parseNumberOrSpecial(int start) {
+    List<int> bytes = <int>[];
+    bool hasMinus = false;
 
-    String text = '';
-
-    while (!isAtEnd && currentChar != '\n') {
-      text += advance();
+    if (_position < _length && input[_position] == /* '-' */ 0x2D) {
+      bytes.add(0x2D);
+      hasMinus = true;
+      _position++;
     }
 
-    return Token(
-      TokenType.comment,
-      '//$text',
-      startPosition,
-      currentPosition(),
-    );
-  }
+    if (_position < _length && input[_position] == /* 'I' */ 0x49) {
+      bytes.add(0x49);
+      _position++;
 
-  Token scanBlockComment(SourcePosition startPosition) {
-    // Skip the "/*"
-    advance();
-    advance();
+      if (_position + 6 < _length &&
+          input[_position] == /* 'n' */ 0x6E &&
+          input[_position + 1] == /* 'f' */ 0x66 &&
+          input[_position + 2] == /* 'i' */ 0x69 &&
+          input[_position + 3] == /* 'n' */ 0x6E &&
+          input[_position + 4] == /* 'i' */ 0x69 &&
+          input[_position + 5] == /* 't' */ 0x74 &&
+          input[_position + 6] == /* 'y' */ 0x79) {
+        bytes.addAll(const <int>[0x6E, 0x66, 0x69, 0x6E, 0x69, 0x74, 0x79]);
+        _position += 7;
 
-    String text = '';
+        String value = String.fromCharCodes(bytes);
 
-    while (!isAtEnd && !(currentChar == '*' && peek(1) == '/')) {
-      text += advance();
+        return Token(
+          hasMinus ? TokenType.negativeInfinity : TokenType.infinity,
+          value,
+          start,
+        );
+      }
     }
 
-    if (!isAtEnd) {
-      // Skip the "*/"
-      advance();
-      advance();
+    if (_position < _length &&
+        input[_position] == /* 'N' */ 0x4E &&
+        _position + 2 < _length &&
+        input[_position + 1] == /* 'a' */ 0x61 &&
+        input[_position + 2] == /* 'N' */ 0x4E) {
+      bytes = <int>[0x4E, 0x61, 0x4E]; // Reset bytes to avoid including minus
+      _position += 3;
+      return Token(TokenType.nan, 'NaN', start);
     }
 
-    return Token(
-      TokenType.comment,
-      '/*$text*/',
-      startPosition,
-      currentPosition(),
-    );
-  }
-
-  Token scanDocComment(SourcePosition startPosition) {
-    // Skip the "/**"
-    advance();
-    advance();
-    advance();
-
-    String text = '';
-
-    while (!isAtEnd && !(currentChar == '*' && peek(1) == '/')) {
-      text += advance();
-    }
-
-    if (!isAtEnd) {
-      // Skip the "*/"
-      advance();
-      advance();
-    }
-
-    return Token(
-      TokenType.documentComment,
-      '/**$text*/',
-      startPosition,
-      currentPosition(),
-    );
-  }
-
-  Token scanNumber(SourcePosition startPosition) {
-    String number = '';
     bool isFloat = false;
+    bool isHex = false;
+    bool isOctal = false;
 
-    // Consume integer part
-    while (!isAtEnd && isDigit(currentChar)) {
-      number += advance();
-    }
+    if (_position < input.length && input[_position] == /* '0' */ 0x30) {
+      bytes.add(0x30);
+      _position++;
 
-    // Look for decimal part
-    if (currentChar == '.' && isDigit(peek(1))) {
-      isFloat = true;
-      number += advance(); // Consume the '.'
-
-      // Consume fractional part
-      while (!isAtEnd && isDigit(currentChar)) {
-        number += advance();
+      if (_position < input.length &&
+          (input[_position] == /* 'X' */ 0x58 ||
+              input[_position] == /* 'x' */ 0x78)) {
+        isHex = true;
+        bytes.add(input[_position]);
+        _position++;
+      } else if (_position < input.length &&
+          _isDigit(input[_position]) &&
+          input[_position] <= /* '7' */ 0x37) {
+        isOctal = true;
       }
     }
 
-    // Look for exponent part
-    if ((currentChar == 'e' || currentChar == 'E') &&
-        (isDigit(peek(1)) ||
-            ((peek(1) == '+' || peek(1) == '-') && isDigit(peek(2))))) {
-      isFloat = true;
-      number += advance(); // Consume 'e' or 'E'
-
-      if (currentChar == '+' || currentChar == '-') {
-        number += advance();
+    if (isHex) {
+      while (_position < input.length && _isHexDigit(input[_position])) {
+        bytes.add(input[_position]);
+        _position++;
       }
-
-      // Consume exponent
-      while (!isAtEnd && isDigit(currentChar)) {
-        number += advance();
+    } else if (isOctal) {
+      while (_position < input.length &&
+          _isDigit(input[_position]) &&
+          input[_position] <= /* '7' */ 0x37) {
+        bytes.add(input[_position]);
+        _position++;
       }
-    }
+    } else {
+      while (_position < input.length && _isDigit(input[_position])) {
+        bytes.add(input[_position]);
+        _position++;
+      }
+      if (_position < input.length && input[_position] == /* '.' */ 0x2E) {
+        isFloat = true;
+        bytes.add(0x2E);
+        _position++;
 
-    TokenType type = isFloat ? TokenType.float : TokenType.integer;
-    return Token(type, number, startPosition, currentPosition());
-  }
+        while (_position < input.length && _isDigit(input[_position])) {
+          bytes.add(input[_position]);
+          _position++;
+        }
+      }
+      if (_position < input.length &&
+          (input[_position] == /* 'E' */ 0x45 ||
+              input[_position] == /* 'e' */ 0x65)) {
+        isFloat = true;
+        bytes.add(input[_position]);
+        _position++;
 
-  Token scanString(String quote, SourcePosition startPosition) {
-    String value = '';
-
-    // Skip the opening quote
-    advance();
-
-    while (!isAtEnd && currentChar != quote) {
-      if (currentChar == '\\') {
-        advance(); // Skip the backslash
-
-        // Handle escape sequences
-        if (isAtEnd) {
-          break;
+        if (_position < input.length &&
+            (input[_position] == /* '+' */ 0x2B ||
+                input[_position] == /* '-' */ 0x2D)) {
+          bytes.add(input[_position]);
+          _position++;
         }
 
-        switch (currentChar) {
-          case 'n':
-            value += '\n';
-            break;
-
-          case 'r':
-            value += '\r';
-            break;
-
-          case 't':
-            value += '\t';
-            break;
-
-          case '\\':
-            value += '\\';
-            break;
-
-          case '"':
-            value += '"';
-            break;
-
-          case "'":
-            value += "'";
-            break;
-
-          default:
-            value += currentChar;
+        while (_position < input.length && _isDigit(input[_position])) {
+          bytes.add(input[_position]);
+          _position++;
         }
-
-        advance();
-      } else {
-        value += advance();
       }
     }
 
-    // Skip the closing quote if not at end
-    if (!isAtEnd) {
-      advance();
+    String value = String.fromCharCodes(bytes);
+
+    if (value == '-' || value == '-.') {
+      return Token(TokenType.invalid, value, start);
     }
 
-    return Token(TokenType.string, value, startPosition, currentPosition());
+    return Token(isFloat ? TokenType.float : TokenType.integer, value, start);
   }
 
-  Token scanIdentifier(SourcePosition startPosition) {
-    String identifier = '';
+  Token _parseString(int start) {
+    List<int> bytes = <int>[];
+    _position++;
 
-    while (!isAtEnd && (isAlphaNumeric(currentChar) || currentChar == '_')) {
-      identifier += advance();
+    while (_position < input.length && input[_position] != /* '"' */ 0x22) {
+      if (_position + 1 < input.length &&
+          input[_position] == /* '\' */ 0x5C &&
+          input[_position + 1] == 0x22) {
+        bytes.add(0x22);
+        _position += 2;
+        continue;
+      }
+
+      bytes.add(input[_position]);
+      _position++;
     }
 
-    // Check for keywords
-    TokenType type = getKeywordType(identifier);
-    return Token(type, identifier, startPosition, currentPosition());
+    if (_position >= input.length) {
+      return Token(TokenType.invalid, String.fromCharCodes(bytes), start);
+    }
+
+    _position++;
+    return Token(TokenType.string, String.fromCharCodes(bytes), start);
   }
-}
 
-TokenType getKeywordType(String identifier) {
-  switch (identifier) {
-    case 'interface':
-      return TokenType.interfaceKeyword;
+  Token _parseIdentifierOrKeyword(int start) {
+    List<int> bytes = <int>[];
 
-    case 'partial':
-      return TokenType.partialKeyword;
+    while (_position < input.length && _isIdentifierChar(input[_position])) {
+      bytes.add(input[_position]);
+      _position++;
+    }
 
-    case 'dictionary':
-      return TokenType.dictionaryKeyword;
+    String value = String.fromCharCodes(bytes);
 
-    case 'enum':
-      return TokenType.enumKeyword;
+    switch (value) {
+      case 'interface':
+        return Token(TokenType.interface, value, start);
 
-    case 'callback':
-      return TokenType.callbackKeyword;
+      case 'dictionary':
+        return Token(TokenType.dictionary, value, start);
 
-    case 'typedef':
-      return TokenType.typeDefKeyword;
+      case 'enum':
+        return Token(TokenType.enumKeyword, value, start);
 
-    case 'implements':
-      return TokenType.implementsKeyword;
+      case 'typedef':
+        return Token(TokenType.typedef, value, start);
 
-    case 'const':
-      return TokenType.constKeyword;
+      case 'void':
+        return Token(TokenType.voidKeyword, value, start);
 
-    case 'null':
-      return TokenType.nullKeyword;
+      case 'async':
+        return Token(TokenType.async, value, start);
 
-    case 'true':
-      return TokenType.trueKeyword;
+      case 'attribute':
+        return Token(TokenType.attribute, value, start);
 
-    case 'false':
-      return TokenType.falseKeyword;
+      case 'callback':
+        return Token(TokenType.callback, value, start);
 
-    case 'static':
-      return TokenType.staticKeyword;
+      case 'const':
+        return Token(TokenType.constKeyword, value, start);
 
-    case 'stringifier':
-      return TokenType.stringifierKeyword;
+      case 'constructor':
+        return Token(TokenType.constructor, value, start);
 
-    case 'attribute':
-      return TokenType.attributeKeyword;
+      case 'deleter':
+        return Token(TokenType.deleter, value, start);
 
-    case 'readonly':
-      return TokenType.readOnlyKeyword;
+      case 'getter':
+        return Token(TokenType.getter, value, start);
 
-    case 'inherit':
-      return TokenType.inheritKeyword;
+      case 'includes':
+        return Token(TokenType.includes, value, start);
 
-    case 'getter':
-      return TokenType.getterKeyword;
+      case 'inherit':
+        return Token(TokenType.inherit, value, start);
 
-    case 'setter':
-      return TokenType.setterKeyword;
+      case 'iterable':
+        return Token(TokenType.iterable, value, start);
 
-    case 'deleter':
-      return TokenType.deleterKeyword;
+      case 'maplike':
+        return Token(TokenType.maplike, value, start);
 
-    case 'required':
-      return TokenType.requiredKeyword;
+      case 'namespace':
+        return Token(TokenType.namespace, value, start);
 
-    case 'optional':
-      return TokenType.optionalKeyword;
+      case 'partial':
+        return Token(TokenType.partial, value, start);
 
-    // Type keywords
-    case 'unsigned':
-      return TokenType.unsignedType;
+      case 'required':
+        return Token(TokenType.required, value, start);
 
-    case 'short':
-      return TokenType.shortType;
+      case 'setlike':
+        return Token(TokenType.setlike, value, start);
 
-    case 'long':
-      return TokenType.longType;
+      case 'setter':
+        return Token(TokenType.setter, value, start);
 
-    case 'float':
-      return TokenType.floatType;
+      case 'static':
+        return Token(TokenType.staticKeyword, value, start);
 
-    case 'double':
-      return TokenType.doubleType;
+      case 'stringifier':
+        return Token(TokenType.stringifier, value, start);
 
-    case 'boolean':
-      return TokenType.booleanType;
+      case 'unrestricted':
+        return Token(TokenType.unrestricted, value, start);
 
-    case 'byte':
-      return TokenType.byteType;
+      case 'mixin':
+        return Token(TokenType.mixin, value, start);
 
-    case 'octet':
-      return TokenType.octetType;
+      case 'optional':
+        return Token(TokenType.optional, value, start);
 
-    case 'void':
-      return TokenType.voidType;
+      case 'or':
+        return Token(TokenType.or, value, start);
 
-    case 'any':
-      return TokenType.anyType;
+      case 'readonly':
+        return Token(TokenType.readonly, value, start);
 
-    case 'object':
-      return TokenType.objectType;
+      case 'true':
+        return Token(TokenType.booleanTrue, value, start);
 
-    case 'symbol':
-      return TokenType.symbolType;
+      case 'false':
+        return Token(TokenType.booleanFalse, value, start);
 
-    case 'Promise':
-      return TokenType.promiseType;
+      case 'null':
+        return Token(TokenType.nullLiteral, value, start);
 
-    case 'sequence':
-      return TokenType.sequenceType;
+      case 'undefined':
+        return Token(TokenType.undefined, value, start);
 
-    case 'record':
-      return TokenType.recordType;
+      case 'bigint':
+        return Token(TokenType.bigint, value, start);
 
-    default:
-      return TokenType.identifier;
+      case 'boolean':
+        return Token(TokenType.boolean, value, start);
+
+      case 'byte':
+        return Token(TokenType.byte, value, start);
+
+      case 'double':
+        return Token(TokenType.double, value, start);
+
+      case 'float':
+        return Token(TokenType.floatKeyword, value, start);
+
+      case 'long':
+        return Token(TokenType.long, value, start);
+
+      case 'octet':
+        return Token(TokenType.octet, value, start);
+
+      case 'short':
+        return Token(TokenType.short, value, start);
+
+      case 'unsigned':
+        return Token(TokenType.unsigned, value, start);
+
+      case 'any':
+        return Token(TokenType.any, value, start);
+
+      case 'object':
+        return Token(TokenType.object, value, start);
+
+      case 'symbol':
+        return Token(TokenType.symbol, value, start);
+
+      case 'ArrayBuffer':
+        return Token(TokenType.arrayBuffer, value, start);
+
+      case 'SharedArrayBuffer':
+        return Token(TokenType.sharedArrayBuffer, value, start);
+
+      case 'DataView':
+        return Token(TokenType.dataView, value, start);
+
+      case 'Int8Array':
+        return Token(TokenType.int8Array, value, start);
+
+      case 'Int16Array':
+        return Token(TokenType.int16Array, value, start);
+
+      case 'Int32Array':
+        return Token(TokenType.int32Array, value, start);
+
+      case 'Uint8Array':
+        return Token(TokenType.uint8Array, value, start);
+
+      case 'Uint16Array':
+        return Token(TokenType.uint16Array, value, start);
+
+      case 'Uint32Array':
+        return Token(TokenType.uint32Array, value, start);
+
+      case 'Uint8ClampedArray':
+        return Token(TokenType.uint8ClampedArray, value, start);
+
+      case 'BigInt64Array':
+        return Token(TokenType.bigInt64Array, value, start);
+
+      case 'BigUint64Array':
+        return Token(TokenType.bigUint64Array, value, start);
+
+      case 'Float16Array':
+        return Token(TokenType.float16Array, value, start);
+
+      case 'Float32Array':
+        return Token(TokenType.float32Array, value, start);
+
+      case 'Float64Array':
+        return Token(TokenType.float64Array, value, start);
+
+      case 'FrozenArray':
+        return Token(TokenType.frozenArray, value, start);
+
+      case 'ObservableArray':
+        return Token(TokenType.observableArray, value, start);
+
+      case 'Promise':
+        return Token(TokenType.promise, value, start);
+
+      case 'record':
+        return Token(TokenType.record, value, start);
+
+      case 'sequence':
+        return Token(TokenType.sequence, value, start);
+
+      case 'ByteString':
+        return Token(TokenType.byteString, value, start);
+
+      case 'DOMString':
+        return Token(TokenType.domString, value, start);
+
+      case 'USVString':
+        return Token(TokenType.usvString, value, start);
+
+      default:
+        return Token(TokenType.identifier, value, start);
+    }
   }
-}
 
-bool isDigit(String char) {
-  return char.codeUnitAt(0) >= '0'.codeUnitAt(0) &&
-      char.codeUnitAt(0) <= '9'.codeUnitAt(0);
-}
+  bool _isWhitespace(int byte) {
+    return byte == /* ' ' */ 0x20 ||
+        byte == /* '\t' */ 0x09 ||
+        byte == /* '\n' */ 0x0A ||
+        byte == 0x0D;
+  }
 
-bool isAlpha(String char) {
-  return (char.codeUnitAt(0) >= 'a'.codeUnitAt(0) &&
-          char.codeUnitAt(0) <= 'z'.codeUnitAt(0)) ||
-      (char.codeUnitAt(0) >= 'A'.codeUnitAt(0) &&
-          char.codeUnitAt(0) <= 'Z'.codeUnitAt(0));
-}
+  bool _isDigit(int byte) {
+    return byte >= 0x30 /* '0' */ && byte <= 0x39;
+  }
 
-bool isAlphaNumeric(String char) {
-  return isAlpha(char) || isDigit(char);
+  bool _isHexDigit(int byte) {
+    return _isDigit(byte) ||
+        (byte >= 0x41 /* 'A' */ && byte <= 0x46 /* 'F' */ ) ||
+        (byte >= 0x61 /* 'a' */ && byte <= 0x66 /* 'f' */ );
+  }
+
+  bool _isIdentifierStart(int byte) {
+    return (byte >= 0x41 /* 'A' */ && byte <= 0x5A /* 'Z' */ ) ||
+        (byte >= 0x61 /* 'a' */ && byte <= 0x7A /* 'z' */ ) ||
+        byte == 0x5F /* '_' */ ||
+        byte == 0x2D /* '-' */;
+  }
+
+  bool _isIdentifierChar(int byte) {
+    return _isIdentifierStart(byte) || _isDigit(byte);
+  }
 }

@@ -45,11 +45,27 @@ class IdlPrinter extends Visitor<void> {
     }
 
     String mapper(ExtendedAttribute attribute) {
-      if (attribute.value.isEmpty) {
-        return attribute.name;
+      if (attribute.arguments.isNotEmpty) {
+        String arguments = [
+          for (Argument argument in attribute.arguments)
+            <String>[
+              if (argument.optional) 'optional',
+              argument.type.toString(),
+              if (argument.variadic) '...',
+              argument.name,
+              if (argument.defaultValue.isNotEmpty)
+                '= ${argument.defaultValue}',
+            ].join(' '),
+        ].join(', ');
+
+        return '${attribute.name}($arguments)';
       }
 
-      return '${attribute.name}=${attribute.value}';
+      if (attribute.value.isNotEmpty) {
+        return '${attribute.name}=${attribute.value}';
+      }
+
+      return attribute.name;
     }
 
     return '[${attributes.map<String>(mapper).join(', ')}] ';

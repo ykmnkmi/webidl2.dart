@@ -3,14 +3,17 @@ import 'package:webidl2/webidl2.dart';
 void main() {
   // Example WebIDL input
   var webidlSource = '''
-[Constructor(DOMString url), Exposed=Window]
-interface Example {};''';
+[Exposed=Window]
+interface MyInterface {
+  Promise<long> doSomething(DOMString name, long count);
+};''';
 
   // Parse the WebIDL
   try {
-    var result = parseWebIdl(webidlSource, strictMode: true);
-    print(result.generateIdl());
-  } catch (error) {
-    print('Error: $error');
+    var tokenizer = Tokenizer(webidlSource);
+    tokenizer.tokenize().forEach(print);
+  } catch (error, trace) {
+    print(error);
+    print(trace);
   }
 }
